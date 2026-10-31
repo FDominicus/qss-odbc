@@ -15,6 +15,8 @@ calls into ODBC live in a small dynamic module (`module/qss-odbc-module.c`);
 (qss-odbc-with-transaction con
   (qss-odbc-execute con "UPDATE person SET name = ? WHERE id = ?" "X" 11))
 (qss-odbc-tables con)
+(qss-odbc-table-columns con "person")      ; optional: a schema
+(qss-odbc-primary-key con "person" "public")
 (qss-odbc-disconnect con)
 ```
 
@@ -74,7 +76,12 @@ What the tests found: the SQLite driver reports VARCHAR through
 SQLColAttribute for BIGINT and BLOB columns (the type comes from
 SQLDescribeCol), keeps 15 digits of a double and has no exact numbers;
 psqlODBC reports booleans as VARCHAR "1"/"0" (the type name decides) and
-splits long messages into several records.
+splits long messages into several records. MariaDB and MySQL have no
+boolean type: BOOLEAN is TINYINT(1) and comes back as 1 or 0; their TEXT
+and BLOB end at 64 KB (LONGTEXT, LONGBLOB hold more), TIMESTAMP covers
+1970 to 2038 only (DATETIME more). MariaDB Connector/ODBC before 3.1.24
+and 3.2.10 miscounts characters U+xxD8 to U+xxDB (such as "Ø", MariaDB
+ODBC-502).
 
 The rules (types, lengths in which units, buffer sizes) follow
 plain-odbc in the QSS version for Common Lisp, tested against Access,
@@ -83,15 +90,23 @@ SQLite, PostgreSQL and MariaDB.
 ## Tests
 
 ```
-QSS_ODBC_DSNS="test sqlitetest" emacs --batch -L . -l qss-odbc-test -f ert-run-tests-batch-and-exit
+QSS_ODBC_DSNS="test mytest sqlitetest" emacs --batch -L . -l qss-odbc-test -f ert-run-tests-batch-and-exit
 ```
 
 Unit tests run always; database tests against each DSN in
 `QSS_ODBC_DSNS` (default `test`), skipped with the reason if the module
 is not built or the DSN not reachable. They create and drop the table
 `qss_odbc_t`. Tested here with PostgreSQL 16 (psqlODBC Unicode and ANSI,
-also with a database that sorts by German rules) and SQLite3 ODBC; the
-module under valgrind without errors or leaks.
+also with a database that sorts by German rules), MariaDB 10.11
+(Connector/ODBC 3.1.15) and SQLite3 ODBC; the module under valgrind
+without errors or leaks.
+
+## Manual
+
+`doc/qss-odbc-manual.pdf` (about 10 pages): building, connecting,
+values, drivers, tests. Build it with
+`cd doc && lualatex qss-odbc-manual.tex && lualatex qss-odbc-manual.tex`
+(LuaLaTeX, KOMA-Script, DejaVu Sans Mono).
 
 ## License
 

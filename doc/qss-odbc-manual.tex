@@ -1,0 +1,268 @@
+% qss-odbc-manual.tex --- A short manual for qss-odbc
+%
+% Copyright (C) 2026 Friedrich Dominicus
+% SPDX-License-Identifier: MIT
+%
+% Build with LuaLaTeX (twice):  lualatex qss-odbc-manual.tex
+
+\documentclass[
+  paper=a4, fontsize=11pt, parskip=half, headings=small,
+  toc=bibliography, numbers=noenddot, DIV=12
+]{scrreprt}
+
+\usepackage{fontspec}
+\setmonofont{DejaVu Sans Mono}[Scale=MatchLowercase]
+\usepackage[english]{babel}
+\usepackage{microtype}
+\usepackage[autostyle]{csquotes}
+\usepackage{xcolor}
+\usepackage{booktabs, longtable, array, tabularx}
+\usepackage{fancyvrb}
+\usepackage{listings}
+\usepackage[automark]{scrlayer-scrpage}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{qssframe}{gray}{0.75}
+\definecolor{qssback}{gray}{0.96}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\file}[1]{\texttt{#1}}
+\newcommand{\kbd}[1]{\texttt{#1}}
+\newcommand{\qss}{\textsf{qss}}
+
+\fvset{fontsize=\small, frame=leftline, framerule=1.5pt, rulecolor=\color{qssframe},
+       xleftmargin=1em, framesep=0.8em}
+
+\lstdefinestyle{elisp}{
+  language=Lisp, basicstyle=\ttfamily\small, columns=fullflexible, keepspaces=true,
+  upquote=true, showstringspaces=false, frame=leftline, framerule=1.5pt,
+  rulecolor=\color{qssframe}, xleftmargin=1em, framesep=0.8em,
+  commentstyle=\color{black!60}, keywordstyle={}, ndkeywordstyle={},
+}
+\lstset{style=elisp}
+
+\pagestyle{scrheadings}
+\KOMAoptions{headsepline=true}
+
+\title{qss-odbc}
+\subtitle{ODBC databases from Emacs Lisp\\[1ex]
+  \normalsize A short manual}
+\author{Friedrich Dominicus}
+\newcommand{\qssversion}{0.3.0}
+\date{Version \qssversion}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+
+% ======================================================================
+\chapter{What it is}
+
+Any database with an ODBC driver --- PostgreSQL, MariaDB, SQL Server, Access,
+SQLite \ldots{} --- from Emacs Lisp:
+
+\begin{lstlisting}
+(require 'qss-odbc)
+(setq con (qss-odbc-connect "test"))      ; a DSN, or a connection string
+(qss-odbc-query con "SELECT id, name FROM person WHERE id > ?" 10)
+;; => (("id" "name") (11 "Müller") (12 "Ærø"))
+(qss-odbc-do-query ((id name) con "SELECT id, name FROM person")
+  (message "%s %s" id name))
+(qss-odbc-with-transaction con
+  (qss-odbc-execute con "UPDATE person SET name = ? WHERE id = ?" "X" 11))
+(qss-odbc-disconnect con)
+\end{lstlisting}
+
+Emacs Lisp has no foreign function interface, and Emacs will not get one: it
+would let any library into Emacs, free or not. What there is are dynamic
+modules, written in C against \file{emacs-module.h}. So the calls into ODBC
+live in a small module, \file{module/qss-odbc-module.c}, and
+\file{qss-odbc.el} is the library on top of it.
+
+The division of labour: \textbf{C does what needs memory and pointers} ---
+handles, buffers, UTF-16, binding parameters, reading columns piece by piece,
+collecting diagnostics --- and returns raw values. \textbf{Lisp interprets
+them}: dates, exact decimals, booleans, the column descriptions. No pointer
+reaches Lisp, so no mistake in Lisp can crash Emacs.
+
+The rules --- which type is bound how, lengths in which unit, buffer sizes,
+the quirks of drivers --- follow plain-odbc in its QSS version for Common
+Lisp, tested against Access, SQLite, PostgreSQL and MariaDB.
+
+\qss{} (\url{https://github.com/FDominicus/qss}) uses this package as a
+source of tables: \code{(qss-> (odbc "test" "person") (where (> :id 10)))}.
+
+% ======================================================================
+\chapter{Building the module}
+
+\begin{Verbatim}
+M-x qss-odbc-build-module
+\end{Verbatim}
+
+It runs \kbd{make} in \file{module/}, shows the output in
+\code{*qss-odbc build*} and loads the result. It needs a C compiler, the ODBC
+headers and a driver manager:
+
+\noindent\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+Debian, Ubuntu & \kbd{apt install unixodbc-dev} (and a driver: \code{odbc-postgresql}, \code{odbc-mariadb}, \code{libsqliteodbc}) \\
+macOS & unixODBC or iODBC; \code{ODBC=iodbc} for the latter \\
+Windows & MinGW-w64 (MSYS2); the driver manager \file{odbc32} is built in \\
+\bottomrule
+\end{tabularx}
+
+\medskip
+If \file{emacs-module.h} is not installed (an Emacs built in its source
+tree), set \code{qss-odbc-make-arguments} to
+\code{("EMACS\_INCLUDE=/path/to/emacs/src")}. Emacs must be 29.1 or later and
+built with modules (\code{module-file-suffix} is not nil). If the module is
+missing, \code{qss-odbc-connect} offers to build it.
+
+% ======================================================================
+\chapter{Connecting and asking}
+
+\section{Connections}
+
+\code{(qss-odbc-connect DSN \&rest OPTIONS)}: DSN is a data source name
+(\kbd{odbcinst -q -s}) or a full connection string. OPTIONS: \code{:user},
+\code{:password}, \code{:autocommit} (default \code{t}), \code{:utf-8} (see
+chapter~\ref{chap:drivers}). The connection prints with the password hidden:
+\code{\#<qss-odbc PostgreSQL DSN=test;UID=frido;PWD=***>}.
+
+Connections start with autocommit on: every statement is its own
+transaction. \code{qss-odbc-with-transaction} runs a body in one, committed
+at the end and rolled back on any non-local exit; \code{qss-odbc-commit} and
+\code{qss-odbc-rollback} are there too.
+
+\section{Queries and statements}
+
+\noindent\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\code{qss-odbc-query} & rows as lists, the first the column names (as \code{sqlite-select} with \code{full}) \\
+\code{qss-odbc-select} & \code{(COLUMNS . ROWS)}; columns as property lists \code{:name :type :size :scale :nullable :type-name} \\
+\code{qss-odbc-select-all} & all result sets of a statement \\
+\code{qss-odbc-execute} & a statement; the number of rows changed \\
+\code{qss-odbc-map-query} & a function on each row, one row in memory at a time \\
+\code{qss-odbc-do-query} & the same as a loop; \code{cl-return} leaves it \\
+\code{qss-odbc-tables}, \code{-table-columns}, \code{-primary-key} & the catalog: SQLTables, SQLColumns, SQLPrimaryKeys; the last two take a schema \\
+\bottomrule
+\end{tabularx}
+
+\medskip
+Values go in as parameters (the \code{?} in the SQL), never as text in the
+SQL. A statement the garbage collector finds unreferenced is freed; closing a
+connection closes its statements.
+
+\section{Errors}
+
+Errors are signalled as \code{qss-odbc-error} with the data
+\code{(MESSAGE SQLSTATE NATIVE-ERROR DIAGNOSTICS)}; DIAGNOSTICS holds every
+record. \code{qss-odbc-error-sqlstate} and \code{-message} take them apart:
+
+\begin{lstlisting}
+(condition-case err (qss-odbc-query con "SELECT * FROM nothing")
+  (qss-odbc-error (qss-odbc-error-sqlstate err)))   ; => "42P01"
+\end{lstlisting}
+
+% ======================================================================
+\chapter{Values}
+
+\noindent\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{From the database} & \textbf{In Lisp} \\
+\midrule
+NULL & \code{nil} \\
+integers & integers (bignums if need be) \\
+REAL, FLOAT, DOUBLE & floats \\
+NUMERIC(p,s), DECIMAL & integers scaled by $10^s$: 1094.80 in a NUMERIC(10,2) is \code{109480}; \code{qss-odbc-decimal-string} shows it \\
+BIT, BOOLEAN & \code{t}, \code{nil} \\
+DATE, TIME, TIMESTAMP & text, the wall clock as stored: \code{"2026-10-30 09:56:00.123456"}; \code{qss-odbc-parse-time} makes a Lisp time \\
+binary & unibyte strings \\
+text, everything else & strings \\
+\bottomrule
+\end{tabularx}
+
+\medskip
+Decimals are exact: a currency amount is never a float on the way. The
+scale is in the column (\code{qss-odbc-column-scale}), so 109480 and 2 are the
+amount; a column of a fixed scale --- Access currency has 4 --- adds and
+compares as integers.
+
+\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\textbf{Parameter} & \textbf{Bound as} \\
+\midrule
+\code{nil}, \code{t} & NULL, TRUE; FALSE is \code{(qss-odbc-bool nil)} \\
+integer, float, string & INTEGER (beyond 32 bit NUMERIC), DOUBLE, WVARCHAR \\
+\code{(qss-odbc-decimal 109480 2)} & NUMERIC 1094.80 \\
+\code{(qss-odbc-binary BYTES)} & VARBINARY \\
+\code{(qss-odbc-date "2026-10-30")} & DATE \\
+\code{(qss-odbc-timestamp "2026-10-30 09:56")} & TIMESTAMP (or a Lisp time, taken in UTC) \\
+\bottomrule
+\end{tabularx}
+
+% ======================================================================
+\chapter{Drivers}\label{chap:drivers}
+
+Unicode drivers get UTF-16, through the W functions of ODBC. ANSI drivers that
+expect UTF-8 --- SQLite, and psqlODBC's ANSI driver, often registered by
+mistake under the name \emph{PostgreSQL Unicode} --- get SQL text,
+parameters, character columns and messages as UTF-8 bytes. Through the W
+functions unixODBC would turn them into Latin-1 (SQLite lost even
+\emph{ü}), and psqlODBC ANSI rejects UTF-16 parameters with HYC00
+\emph{Unrecognized C\_parameter type}. Which drivers count as such:
+\code{qss-odbc-ansi-utf-8-drivers}, or \code{:utf-8 t} at
+\code{qss-odbc-connect}.
+
+What the tests found:
+
+\begin{description}
+\item[SQLite] reports VARCHAR through SQLColAttribute for BIGINT and BLOB
+  columns (the type comes from SQLDescribeCol); keeps 15 digits of a double;
+  has no exact numbers.
+\item[psqlODBC] reports booleans as VARCHAR \code{"1"}/\code{"0"} (the type
+  name \code{bool} decides); splits long messages into several records at the
+  size of the first request.
+\item[MariaDB, MySQL] have no boolean: BOOLEAN is TINYINT(1) and comes as 1 or
+  0. TEXT and BLOB end at 64\,KB, TIMESTAMP covers 1970 to 2038 (LONGTEXT,
+  LONGBLOB, DATETIME hold more). Connector/ODBC before 3.1.24 and 3.2.10
+  miscounts characters U+xxD8 to U+xxDB (\emph{Ø}). An UPDATE counts only rows
+  whose values changed.
+\end{description}
+
+% ======================================================================
+\chapter{Tests}
+
+\begin{Verbatim}
+QSS_ODBC_DSNS="test mytest" emacs -Q --batch -L . -l qss-odbc-test \
+  -f ert-run-tests-batch-and-exit
+\end{Verbatim}
+
+Unit tests run always; database tests against each DSN in
+\code{QSS\_ODBC\_DSNS} (default \code{test}), skipped with the reason if the
+module is not built or a DSN cannot be reached. They create and drop the
+table \code{qss\_odbc\_t}. Text in many scripts and with surrogate pairs on
+the piece boundaries of SQLGetData, integers at 32 and 64 bit, exact
+decimals, dates before 1900 and at both changes of summer time, binary data,
+errors, transactions, 2000 rows one at a time, 3000 statements left to the
+garbage collector, catalog functions.
+
+Tested with PostgreSQL 16 (psqlODBC Unicode and ANSI, also a database that
+sorts by German rules), MariaDB 10.11 (Connector/ODBC 3.1.15) and SQLite3
+ODBC; the module under valgrind without errors or leaks.
+
+% ======================================================================
+\chapter{Files}
+
+\noindent\begin{tabularx}{\linewidth}{@{}lX@{}}
+\toprule
+\file{qss-odbc.el} & the library: connections, queries, values, the catalog, building the module \\
+\file{module/qss-odbc-module.c} & the C module: handles, UTF-16, parameters, columns, diagnostics \\
+\file{module/Makefile} & Linux, macOS (iODBC), Windows (MinGW) \\
+\file{qss-odbc-test.el} & the tests \\
+\file{doc/} & this manual \\
+\bottomrule
+\end{tabularx}
+
+\end{document}

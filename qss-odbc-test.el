@@ -118,21 +118,26 @@
 (defun qss-odbc-test--postgres-p (con)
   (string-match-p "postgres" (downcase (qss-odbc-connection-dbms con))))
 
+(defun qss-odbc-test--mysql-p (con)
+  (string-match-p "mysql\\|mariadb" (downcase (qss-odbc-connection-dbms con))))
+
 (defun qss-odbc-test--type (con kind)
   "Column type for KIND in the dialect of CON."
-  (let ((pg (qss-odbc-test--postgres-p con)))
+  (let ((pg (qss-odbc-test--postgres-p con))
+        (my (qss-odbc-test--mysql-p con)))
     (pcase kind
-      ('text "TEXT")
+      ('text (if my "LONGTEXT" "TEXT"))       ; MariaDB TEXT ends at 64 KB
       ('varchar "VARCHAR(255)")
       ('int "INTEGER")
       ('bigint "BIGINT")
       ('double "DOUBLE PRECISION")
       ('money "NUMERIC(12,2)")
       ('big "NUMERIC(40,4)")
-      ('bool (if pg "BOOLEAN" "BIT"))
+      ('bool (if (or pg my) "BOOLEAN" "BIT"))
       ('date "DATE")
-      ('timestamp (if pg "TIMESTAMP(6)" "TIMESTAMP"))
-      ('blob (if pg "BYTEA" "BLOB")))))
+      ;; MariaDB TIMESTAMP holds 1970..2038 only
+      ('timestamp (cond (pg "TIMESTAMP(6)") (my "DATETIME(6)") (t "TIMESTAMP")))
+      ('blob (cond (pg "BYTEA") (my "LONGBLOB") (t "BLOB"))))))
 
 (defmacro qss-odbc-deftest (name doc &rest body)
   "Define test NAME that runs BODY with `con' bound, for each DSN.
@@ -231,14 +236,22 @@ In BODY, `dsn' is the DSN.  Without module or reachable DSN: skip."
              1234567890123456789012345678901234))
   ;; beyond 64 bit as a plain integer parameter
   (should (= (qss-odbc-test--roundtrip con 'big (expt 10 30)) (* (expt 10 30) 10000)))
-  (let ((col (car (car (qss-odbc-select con "SELECT CAST(1.5 AS NUMERIC(8,3)) AS x")))))
-    (should (eq (qss-odbc-column-type col) 'numeric))
+  (let ((col (car (car (qss-odbc-select
+                        con (if (qss-odbc-test--mysql-p con)
+                                "SELECT CAST(1.5 AS DECIMAL(8,3)) AS x"
+                              "SELECT CAST(1.5 AS NUMERIC(8,3)) AS x"))))))
+    (should (memq (qss-odbc-column-type col) '(numeric decimal)))
     (should (eql (qss-odbc-column-scale col) 3)))))
 
 (qss-odbc-deftest qss-odbc-db-booleans
     "t and (qss-odbc-bool nil)."
-  (should (eq (qss-odbc-test--roundtrip con 'bool t) t))
-  (should (eq (qss-odbc-test--roundtrip con 'bool (qss-odbc-bool nil)) nil)))
+  (if (qss-odbc-test--mysql-p con)
+      ;; MariaDB/MySQL: BOOLEAN is TINYINT(1), the driver reports an integer
+      (progn
+        (should (eql (qss-odbc-test--roundtrip con 'bool t) 1))
+        (should (eql (qss-odbc-test--roundtrip con 'bool (qss-odbc-bool nil)) 0)))
+    (should (eq (qss-odbc-test--roundtrip con 'bool t) t))
+    (should (eq (qss-odbc-test--roundtrip con 'bool (qss-odbc-bool nil)) nil))))
 
 (qss-odbc-deftest qss-odbc-db-dates
     "Dates and timestamps as wall clock text; before 1900, summer time."

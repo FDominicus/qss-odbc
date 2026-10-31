@@ -4,7 +4,7 @@
 
 ;; Author: Friedrich Dominicus
 ;; Maintainer: Friedrich Dominicus
-;; Version: 0.2.0
+;; Version: 0.3.0
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: data, sql, tools
 ;; URL: https://github.com/FDominicus/qss-odbc
@@ -539,16 +539,18 @@ statement is freed in any case.
 TYPE, e.g. \"TABLE\" or \"VIEW\" or \"TABLE,VIEW\", narrows them."
   (qss-odbc--catalog-rows con 'tables (list nil nil nil type)))
 
-(defun qss-odbc-table-columns (con table)
-  "Columns of TABLE in CON as property lists (:column_name :type_name ...)."
-  (qss-odbc--catalog-rows con 'columns (list nil nil table nil)))
+(defun qss-odbc-table-columns (con table &optional schema)
+  "Columns of TABLE in CON as property lists (:column_name :type_name ...).
+SCHEMA narrows to that schema; without it, a table of the same name in
+another schema adds its columns too."
+  (qss-odbc--catalog-rows con 'columns (list nil schema table nil)))
 
-(defun qss-odbc-primary-key (con table)
-  "Names of the primary key columns of TABLE, in key order.
+(defun qss-odbc-primary-key (con table &optional schema)
+  "Names of the primary key columns of TABLE (in SCHEMA), in key order.
 Nil if the driver does not support SQLPrimaryKeys."
   (condition-case nil
       (mapcar (lambda (r) (plist-get r :column_name))
-              (sort (qss-odbc--catalog-rows con 'primary-keys (list nil nil table))
+              (sort (qss-odbc--catalog-rows con 'primary-keys (list nil schema table))
                     (lambda (a b) (< (plist-get a :key_seq) (plist-get b :key_seq)))))
     (qss-odbc-error nil)))
 
